@@ -1,5 +1,7 @@
 # CS265-mlsys-project
 
+This repo is the starter code for [Harvard CS265 ML Systems project](http://daslab.seas.harvard.edu/classes/cs265).
+
 ## How to start
 1. Clone the repo
 
