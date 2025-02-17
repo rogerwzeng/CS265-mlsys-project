@@ -102,15 +102,20 @@ def experiment():
     layers = 10
     dim = 100
     num_iters = 5
-    model = DummyModel(dim=dim, layers=layers).cuda()
-    batch = torch.randn(batch_size, dim).cuda()
+
+    device_str = 'cuda:0'
+    model = DummyModel(dim=dim, layers=layers).to(device_str)
+    batch = torch.randn(batch_size, dim).to(device_str)
     optim = torch.optim.Adam(
-        model.parameters(), lr=0.01, foreach=False, fused=True, capturable=True
+        model.parameters(), lr=0.01,
+        foreach=True,  # fused=True,
+        capturable=True
     )
 
     for param in model.parameters():
         if param.requires_grad:
-            param.grad = torch.rand_like(param)
+            param.grad = torch.rand_like(param, device=device_str)
+
     optim.step()
     optim.zero_grad()
 
