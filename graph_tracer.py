@@ -14,8 +14,7 @@ import torch.optim as optim
 import torch.utils._pytree as pytree
 from torch import fx
 from torch._subclasses.fake_tensor import FakeTensorMode
-from torch.distributed._functional_collectives import all_reduce
-from torch.distributed.tensor import DTensor
+from torch.distributed._tensor import DTensor
 from torch.distributed.tensor._op_schema import OpSchema, OutputSharding
 from torch.distributed._tensor.placement_types import DTensorSpec
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -24,11 +23,44 @@ from torch.nn.utils import stateless
 from torch.utils.hooks import RemovableHandle
 
 
+"""
+Graph tracing module for PyTorch computation graphs.
+
+This module provides functionality to trace, compile, and transform PyTorch
+computation graphs, with special support for distributed tensor operations
+and gradient tracking. It includes:
+- Custom separator functions for forward/backward pass identification
+- Graph compilation utilities
+- Gradient tagging mechanisms
+- Optimizer state management
+
+The module is designed to work with PyTorch's FX graph system and supports
+both training and optimization operations.
+"""
+
 def sep(x: torch.Tensor) -> torch.Tensor:
+    """
+    Identity function used as a separator marker in computation graphs.
+    
+    Args:
+        x (torch.Tensor): Input tensor
+        
+    Returns:
+        torch.Tensor: Unmodified input tensor
+    """
     return x
 
 
 def sep_backward(grad: torch.Tensor) -> torch.Tensor:
+    """
+    Identity function for backward pass gradient propagation.
+    
+    Args:
+        grad (torch.Tensor): Input gradient tensor
+        
+    Returns:
+        torch.Tensor: Unmodified gradient tensor
+    """
     return grad
 
 
@@ -57,12 +89,39 @@ DTensor._op_dispatcher.sharding_propagator.register_sharding_prop_rule(torch.ops
 
 
 class SEPFunction(torch.autograd.Function):
+    """
+    Custom autograd function that acts as a separator between forward and backward passes.
+    
+    Used to mark boundaries in the computation graph for analysis and optimization.
+    """
+
     @staticmethod
     def forward(ctx: Any, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass identity operation.
+        
+        Args:
+            ctx: Autograd context
+            x (torch.Tensor): Input tensor
+            
+        Returns:
+            torch.Tensor: Unmodified input tensor
+        """
         return torch.ops.separator.sep(x)
+
 
     @staticmethod
     def backward(ctx: Any, grad_x: torch.Tensor) -> torch.Tensor:
+        """
+        Backward pass identity operation.
+        
+        Args:
+            ctx: Autograd context
+            grad_x (torch.Tensor): Input gradient tensor
+            
+        Returns:
+            torch.Tensor: Unmodified gradient tensor
+        """
         return torch.ops.separator.sep_backward(grad_x)
 
 
@@ -118,7 +177,15 @@ def gradients_tagging(params: Dict[str, nn.Parameter]):
     This is a helper function that tags the gradient of the parameters
     with a special tag, so that we can identify them during SPMD expansion.
 
-    It's safe to trace those hooks and we would remove those nodes later.
+    Installs temporary hooks on parameters to mark their gradients during
+    backward pass computation.  It's safe to trace those hooks and we would 
+    remove those nodes later.
+    
+    Args:
+        params (Dict[str, nn.Parameter]): Dictionary of named parameters
+        
+    Yields:
+        None: Executes the wrapped code block with gradient tagging active
     """
 
     tagging_hooks: List[RemovableHandle] = []
@@ -139,6 +206,16 @@ def _rematerialize_optimizer(
     named_states: Dict[str, Any],
     params: Dict[str, nn.Parameter],
 ):
+    """
+    Context manager for optimizer state rematerialization.
+    
+    Temporarily updates optimizer state with proxy tensors for tracing.
+    
+    Args:
+        opt (optim.Optimizer): The optimizer instance
+        named_states (Dict[str, Any]): Named optimizer states
+        params (Dict[str, nn.Parameter]): Model parameters
+    """
     assert opt is not None
 
     # update opt.state with proxy tensors
@@ -177,13 +254,38 @@ def _enable_compile():
 
 @dataclass
 class _CompiledResult:
+    """
+    Container for compiled graph module and associated state.
+    
+    Attributes:
+        gm (fx.GraphModule): Compiled graph module
+        mod (nn.Module): Original module
+        opt (Optional[torch.optim.Optimizer]): Associated optimizer
+        flat_state (List[torch.Tensor]): Flattened state tensors
+    """
     gm: fx.GraphModule
     mod: nn.Module
     opt: Optional[torch.optim.Optimizer]
     flat_state: List[torch.Tensor]
 
 
-def _compile(func: Callable, *args: Any, **kwargs: Any):
+def _compile(func: Callable, *args: Any, **kwargs: Any) -> _CompiledResult:
+    """
+    Internal compilation function that traces and processes a callable.
+    
+    Creates a graph module from the function and processes it for optimization.
+    
+    Args:
+        func (Callable): Function to compile
+        *args: Positional arguments for the function
+        **kwargs: Keyword arguments for the function
+        
+    Returns:
+        _CompiledResult: Compiled graph module and associated state
+        
+    Raises:
+        AssertionError: If no nn.Module instance is found in arguments
+    """
     # 1. Extract nn.Module and Optimizer from args and kwargs
     mod, opt = None, None
     for arg in pytree.tree_flatten(list(args) + list(kwargs.values()))[0]:
@@ -280,7 +382,20 @@ def _compile(func: Callable, *args: Any, **kwargs: Any):
 COMPILED_OBJECT_KEY = "_compiled_obj"
 
 
-def compile(func: Callable, gm_transformation: Callable):
+def compile(func: Callable, gm_transformation: Callable) -> Callable:
+    """
+    Main compilation function that wraps a function for optimized execution.
+    
+    Traces the function, applies transformations, and caches the result for
+    repeated execution.
+    
+    Args:
+        func (Callable): Function to compile
+        gm_transformation (Callable): Transformation to apply to the graph module
+        
+    Returns:
+        Callable: Wrapped function that executes the compiled graph
+    """
     @wraps(func)
     def wrapper(*args, **kwargs):
         first_iter = False

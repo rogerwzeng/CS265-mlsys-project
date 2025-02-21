@@ -11,8 +11,7 @@ import torch.nn as nn
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
-# This is the dummy model that is for use in starter code. But we will
-# experiment with Resnet and Transformer model.
+# This is the dummy model code independent from the main package, to demonstrate work flow only.
 
 
 class DummyModel(nn.Module):
@@ -103,6 +102,7 @@ def experiment():
     dim = 100
     num_iters = 5
 
+
     device_str = 'cuda:0'
     model = DummyModel(dim=dim, layers=layers).to(device_str)
     batch = torch.randn(batch_size, dim).to(device_str)
@@ -112,6 +112,7 @@ def experiment():
         capturable=True
     )
 
+    # initialize model parameters with random values at first
     for param in model.parameters():
         if param.requires_grad:
             param.grad = torch.rand_like(param, device=device_str)

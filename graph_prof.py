@@ -39,24 +39,26 @@ class GraphProfiler(fx.Interpreter):
         # those nodes which are not parameters (not placeholder node types) but
         # are created during the forward pass and are also used in the backward
         # pass for computation.
-
+        #
         # The boundary between the forward pass and backward pass can be
-        # identified by locating the node '%sep : [num_users=1] =
-        # call_function[target=torch.ops.separator.sep.default]' which will
-        # define the end of the forward pass. You will see the loss function
+        # identified by locating the node:
+        #
+        # '%sep : [num_users=1] = # call_function[target=torch.ops.separator.sep.default]' 
+        #
+        # which will define the end of the forward pass. You will see the loss function
         # after thsi operation and then you will encounter a node named,
-        # '%sep_backward : [num_users=1] =
-        # call_function[target=torch.ops.separator.sep_backward.default]'. This
-        # node marks the beginning of the backward pass.
-
-        # For these intermediate nodes in the graph, you will record their last
-        # use in the forward pass and their first use in the backward pass.
-
+        #
+        # '%sep_backward : [num_users=1] = # call_function[target=torch.ops.separator.sep_backward.default]'
+        #
+        # This node marks the beginning of the backward pass.
+        # For intermediate nodes in the graph, you will record their last
+        # use in the forward pass and their first use in the backward pass.     
+        #
         # The parameters of the models are the placeholder (input) nodes of the
         # graph. Note that not all the placeholder nodes of the graph are
         # parameters. The optimizer's states and the input mini-batch are also
         # placeholder nodes that given as inputs to the graph.
-
+        #
         # The parameters and gradients of the model can be otained using the
         # optimizer node's arguments. The optimizer node can be identified by
         # the node '%_fused_adam : [num_users=3] =
