@@ -1,7 +1,7 @@
-# CS265-mlsys-project
+# $\mu$-TWO Compiler: Activation Checkpointing for Multi-model Neural Network Training
 ## Spring 2025 Term
 
-This repo is for [Harvard CS265 ML Systems project](http://daslab.seas.harvard.edu/classes/cs265).
+This repo is the term project for [Harvard CS265 ML Systems project](http://daslab.seas.harvard.edu/classes/cs265).
 
 ## How to start
 1. Clone the repo
