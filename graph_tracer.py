@@ -1,3 +1,22 @@
+"""
+Graph tracing and compilation module for PyTorch models.
+
+This module provides functionality for tracing, compiling, and optimizing PyTorch
+computation graphs. It includes utilities for:
+- Separating forward and backward passes
+- Graph compilation and transformation
+- Gradient tracking and optimization
+- State management for compiled functions
+
+The module is designed to work with PyTorch's FX graph system and supports
+both training and optimization operations.
+
+Key components:
+- SEPFunction: Custom autograd function for pass separation
+- compile: Main function for compiling and optimizing computation graphs
+- _compile: Internal compilation implementation
+"""
+
 from contextlib import contextmanager, nullcontext
 from copy import copy
 from dataclasses import dataclass
@@ -8,35 +27,25 @@ from utils import SPMD_DECOMP_TABLE
 import torch
 
 # We need to import _functional_collectives to trigger op registration
-import torch.distributed._functional_collectives
+#import torch.distributed._functional_collectives
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils._pytree as pytree
 from torch import fx
 from torch._subclasses.fake_tensor import FakeTensorMode
-from torch.distributed._tensor import DTensor
+'''
+from torch.distributed.tensor._api import DTensor
 from torch.distributed.tensor._op_schema import OpSchema, OutputSharding
 from torch.distributed._tensor.placement_types import DTensorSpec
+'''
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.graph import CodeGen, _PyTreeCodeGen, _PyTreeInfo
 from torch.nn.utils import stateless
 from torch.utils.hooks import RemovableHandle
 
 
-"""
-Graph tracing module for PyTorch computation graphs.
+DEBUG_MODE = False  # for __compile()
 
-This module provides functionality to trace, compile, and transform PyTorch
-computation graphs, with special support for distributed tensor operations
-and gradient tracking. It includes:
-- Custom separator functions for forward/backward pass identification
-- Graph compilation utilities
-- Gradient tagging mechanisms
-- Optimizer state management
-
-The module is designed to work with PyTorch's FX graph system and supports
-both training and optimization operations.
-"""
 
 def sep(x: torch.Tensor) -> torch.Tensor:
     """
@@ -70,7 +79,7 @@ separator_lib.impl("sep", sep, "CompositeExplicitAutograd")
 separator_lib.define("sep_backward(Tensor x) -> Tensor")
 separator_lib.impl("sep_backward", sep_backward, "CompositeExplicitAutograd")
 
-
+'''
 def _identity_prop_rule(op_schema: OpSchema) -> OutputSharding:
     (x,) = op_schema.args_schema
     assert isinstance(x, DTensorSpec), f"expecting DTensorSpec but got {x}"
@@ -85,7 +94,7 @@ def _prop_sepm_backward(op_schema: OpSchema) -> OutputSharding:
 
 DTensor._op_dispatcher.sharding_propagator.register_sharding_prop_rule(torch.ops.separator.sep.default, _prop_sepm)
 DTensor._op_dispatcher.sharding_propagator.register_sharding_prop_rule(torch.ops.separator.sep_backward.default, _prop_sepm_backward)
-
+'''
 
 
 class SEPFunction(torch.autograd.Function):
@@ -170,7 +179,6 @@ def _to_caller_flattened_graph_module(gm: fx.GraphModule) -> fx.GraphModule:
     gm.recompile()
     return gm
 
-
 @contextmanager
 def gradients_tagging(params: Dict[str, nn.Parameter]):
     """
@@ -208,9 +216,7 @@ def _rematerialize_optimizer(
 ):
     """
     Context manager for optimizer state rematerialization.
-    
     Temporarily updates optimizer state with proxy tensors for tracing.
-    
     Args:
         opt (optim.Optimizer): The optimizer instance
         named_states (Dict[str, Any]): Named optimizer states
@@ -321,7 +327,51 @@ def _compile(func: Callable, *args: Any, **kwargs: Any) -> _CompiledResult:
         named_states: Dict[str, nn.Parameter],
         args: Any,
         kwargs: Any,
-    ):
+    ) -> tuple[Any, List[nn.Parameter], List[Any]]:
+        """
+        Creates a stateless version of a function for tracing purposes.
+        
+        This function temporarily replaces module parameters and optimizer states
+        with proxy tensors to enable tracing of the computation graph. It manages
+        both model state (parameters and buffers) and optimizer state during the
+        tracing process.
+        
+        Args:
+            func (Callable): The original function to make stateless
+            params (Dict[str, nn.Parameter]): Named model parameters
+            buffers (Dict[str, torch.Tensor]): Named model buffers
+            named_states (Dict[str, nn.Parameter]): Named optimizer states
+            args (Any): Original function's positional arguments
+            kwargs (Any): Original function's keyword arguments
+            
+        Returns:
+            tuple:
+                - Any: Original function's return value
+                - List[nn.Parameter]: Updated model parameters
+                - List[Any]: Updated optimizer states
+                
+        Example:
+            >>> def train_step(model, optimizer, batch):
+            ...     loss = model(batch).sum()
+            ...     loss.backward()
+            ...     optimizer.step()
+            >>> 
+            >>> params = dict(model.named_parameters())
+            >>> buffers = dict(model.named_buffers())
+            >>> named_states = {n: optimizer.state[p] for n, p in params.items()}
+            >>> ret, updated_params, updated_states = stateless_func(
+            ...     train_step, params, buffers, named_states, 
+            ...     (model, optimizer, batch), {}
+            ... )
+        
+        Notes:
+            - Uses context managers to temporarily modify module and optimizer state
+            - Installs gradient tagging hooks for SPMD expansion
+            - Preserves original state after execution
+            - Enables tracing of both forward and backward passes
+            - Handles optimizer state rematerialization
+        """
+
         with stateless._reparametrize_module(
             mod, {**params, **buffers}
         ), _rematerialize_optimizer(
@@ -345,13 +395,79 @@ def _compile(func: Callable, *args: Any, **kwargs: Any) -> _CompiledResult:
     args = pytree.tree_map_only(torch.Tensor, _get_fake_args, args)
     kwargs = pytree.tree_map_only(torch.Tensor, _get_fake_args, kwargs)
 
-    with _enable_compile(), torch.autograd.detect_anomaly(check_nan=False):
+
+    # turn on DEBUG_MODE for debug, turn off for production
+    compile_context = (
+        torch.autograd.detect_anomaly(check_nan=False)
+        if DEBUG_MODE
+        else nullcontext()
+    )
+
+    # Actual compile starts
+    with _enable_compile(), compile_context:
         gm = make_fx(
             partial(stateless_func, func),
             tracing_mode=tracing_mode,
             decomposition_table=SPMD_DECOMP_TABLE,
             _allow_non_fake_inputs=False,
         )(params, buffers, named_states, args, kwargs)
+        """
+        https://pytorch.org/docs/stable/generated/torch.fx.experimental.proxy_tensor.make_fx.html
+
+        Creates an FX graph by tracing a function using proxy tensors.
+
+        This function enables advanced graph capture by using proxy tensors during tracing,
+        which can track operations more comprehensively than traditional FX tracing.
+
+        Args:
+            fn (Callable): Function to be traced. Can be any Python callable that takes
+                tensor inputs and performs PyTorch operations.
+
+            tracing_mode (str, optional): Specifies the tracing mode. Options:
+                - "real": Uses real tensors during tracing
+                - "fake": Uses fake tensors (recommended for memory efficiency)
+                - "symbolic": Uses symbolic shapes for dynamic tracing
+                Default: "real"
+
+            decomposition_table (Dict[Callable, Callable], optional): Maps operations
+                to their decomposed implementations. Used to break down complex ops
+                into simpler ones during tracing.
+                Default: None
+
+            _allow_non_fake_inputs (bool, optional): Internal flag to allow mixing
+                of fake and real tensors during tracing. Generally should be False
+                unless you know what you're doing.
+                Default: False
+
+        Returns:
+            Callable: A function that when called with the same argument types as `fn`,
+            returns an FX GraphModule representing the traced operations.
+
+        Example:
+            >>> def my_fun(x, y):
+            ...     return torch.mm(x, y)
+            >>>
+            >>> traced_fn = make_fx(my_fun)
+            >>> x = torch.randn(2, 3)
+            >>> y = torch.randn(3, 4)
+            >>> graph_module = traced_fn(x, y)
+            >>> print(graph_module.graph)
+
+        Notes:
+            - More powerful than traditional FX tracing
+            - Can capture dynamic control flow
+            - Handles autograd operations
+            - Supports complex tensor operations
+            - Can trace through nn.Module methods
+
+        Raises:
+            RuntimeError: If tracing fails or encounters unsupported operations
+            ValueError: If invalid tracing_mode is specified
+
+        See Also:
+            - torch.fx.symbolic_trace: Traditional FX tracing
+            - torch.fx.GraphModule: The output graph module type
+        """
 
     params_and_buffers: Dict[str, Union[torch.Tensor, nn.Parameter]] = {
         **params,
@@ -396,19 +512,54 @@ def compile(func: Callable, gm_transformation: Callable) -> Callable:
     Returns:
         Callable: Wrapped function that executes the compiled graph
     """
-    @wraps(func)
+    @wraps(func)  # Preserves the metadata of the original function
     def wrapper(*args, **kwargs):
+        """
+        Wrapper function that handles compilation and execution.
+        
+        On first call:
+        - Compiles the function
+        - Applies transformations
+        - Caches the result
+        
+        On subsequent calls:
+        - Uses cached compiled version
+        - Processes inputs
+        - Executes optimized graph
+        
+        Args:
+            *args: Positional arguments for the function
+            **kwargs: Keyword arguments for the function
+            
+        Returns:
+            Any: Output from the compiled graph execution
+        """
+        # Check if we already have a compiled version stored in wrapper's dictionary
         first_iter = False
         compiled_obj = wrapper.__dict__.get(COMPILED_OBJECT_KEY, None)
         if compiled_obj is None:
             first_iter = True
             compiled_obj = _compile(func, *args, **kwargs)
             wrapper.__dict__[COMPILED_OBJECT_KEY] = compiled_obj
+        
+        # Combine two things:
+        # 1. compiled_obj.flat_state: Contains model parameters, buffers, optimizer states
+        # 2. Flattened version of current function arguments
+        # Example:
+        # If args = (model, optimizer, batch)
+        # and kwargs = {'learning_rate': 0.01}
+        # pytree.tree_flatten([args, kwargs])[0] would create a flat list:
+        # [model, optimizer, batch, 0.01]
         flat_inps = compiled_obj.flat_state + pytree.tree_flatten([args, kwargs])[0]
+
+        # Only apply transformation on first iteration
         if first_iter and gm_transformation:
             compiled_obj.gm = gm_transformation(compiled_obj.gm, flat_inps)
+
+        # no storing gradients
         with torch.no_grad():
-            output = compiled_obj.gm(*flat_inps)[0]
+            # Execute the compiled graph, [0] because the graph might return multiple values
+            output = compiled_obj.gm(*flat_inps)[0] 
 
         return output
 

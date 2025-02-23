@@ -18,7 +18,7 @@ Visit [model uploads](https://docs.unsloth.ai/get-started/all-our-models) and [n
 # # Skip restarting message in Colab
 # import sys; modules = list(sys.modules.keys())
 # for x in modules: sys.modules.pop(x) if "PIL" in x or "google" in x else None
-#
+# 
 # !pip install wandb onnx protobuf --upgrade
 # !pip install unsloth vllm
 # !pip install --upgrade pillow
@@ -33,19 +33,19 @@ from unsloth import FastLanguageModel, PatchFastRL
 PatchFastRL("GRPO", FastLanguageModel)
 
 import wandb
-"""
+'''
 from google.colab import userdata
 
 wb_api_key = userdata.get('WANDB_API_KEY')
 wandb.login(key = wb_api_key)
-"""
+'''
 wandb.login(key="2c25567b01802223eadb2ec1e05e197fe683fc72")
 
 """Load up base model, and set parameters"""
 
 from unsloth import is_bfloat16_supported
 import torch
-max_seq_length = 1024 # Can increase for longer reasoning traces
+max_seq_length = 20480 # Can increase for longer reasoning traces
 lora_rank = 32 # Larger rank = smarter, but slower
 
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -281,11 +281,11 @@ training_args = GRPOConfig(
     fp16 = not is_bfloat16_supported(),
     per_device_train_batch_size = 1,
     gradient_accumulation_steps = 1, # Increase to 4 for smoother training
-    num_generations = 5, # num of samples generated per training step. Decrease if out of memory
-    max_prompt_length = 512,
-    max_completion_length = 1024,
+    num_generations = 10, # num of samples generated per training step. Decrease if out of memory
+    max_prompt_length = 1024,
+    max_completion_length = 10240,
     num_train_epochs = 3, # Set to 1 for a full training run
-    max_steps = 250,
+    max_steps = 2500,
     save_steps = 250,
     max_grad_norm = 0.1, # gradient clipping
     report_to = "wandb", # Can use Weights & Biases
