@@ -1,6 +1,7 @@
 # CS265-mlsys-project
+## Spring 2025 Term
 
-This repo is the starter code for [Harvard CS265 ML Systems project](http://daslab.seas.harvard.edu/classes/cs265).
+This repo is for [Harvard CS265 ML Systems project](http://daslab.seas.harvard.edu/classes/cs265).
 
 ## How to start
 1. Clone the repo
@@ -19,8 +20,6 @@ conda install conda-forge::python=3.12 conda-forge::numpy=2.2.2 pytorch::pytorch
 ``` bash
 python starter_code.py
 ```
-
-5. If you have any questions, feel free to come to the labs and/or share at Ed!
 
 ## Useful materials
 1. The section recordings
